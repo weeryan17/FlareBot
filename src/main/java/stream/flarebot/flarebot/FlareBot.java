@@ -23,6 +23,7 @@ import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.io.PrintStream;
+import java.lang.IllegalStateException;
 import java.net.URLDecoder;
 import java.nio.file.Files;
 import java.nio.file.Paths;
@@ -47,6 +48,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
+import javax.annotation.Nullable;
+import javax.annotation.Nonnull;
 import net.dv8tion.jda.bot.sharding.DefaultShardManagerBuilder;
 import net.dv8tion.jda.bot.sharding.ShardManager;
 import net.dv8tion.jda.core.EmbedBuilder;
@@ -81,6 +84,7 @@ import stream.flarebot.flarebot.analytics.GuildAnalytics;
 import stream.flarebot.flarebot.analytics.GuildCountAnalytics;
 import stream.flarebot.flarebot.api.ApiRequester;
 import stream.flarebot.flarebot.api.ApiRoute;
+import stream.flarebot.flarebot.api.GzipRequestInterceptor;
 import stream.flarebot.flarebot.audio.PlayerListener;
 import stream.flarebot.flarebot.commands.Command;
 import stream.flarebot.flarebot.commands.CommandType;
@@ -94,6 +98,7 @@ import stream.flarebot.flarebot.commands.moderation.*;
 import stream.flarebot.flarebot.commands.moderation.mod.*;
 import stream.flarebot.flarebot.commands.music.*;
 import stream.flarebot.flarebot.commands.random.AvatarCommand;
+import stream.flarebot.flarebot.commands.random.JumboCommand;
 import stream.flarebot.flarebot.commands.secret.*;
 import stream.flarebot.flarebot.commands.secret.internal.ChangelogCommand;
 import stream.flarebot.flarebot.commands.secret.internal.PostUpdateCommand;
@@ -154,9 +159,10 @@ public class FlareBot {
     private long startTime;
     private static Prefixes prefixes;
 
-    private static OkHttpClient client =
+    private static final DataInterceptor dataInterceptor = new DataInterceptor(DataInterceptor.RequestSender.JDA);
+    private static final OkHttpClient client =
             new OkHttpClient.Builder().connectionPool(new ConnectionPool(4, 10, TimeUnit.SECONDS))
-                    .addInterceptor(new DataInterceptor()).build();
+                    .addInterceptor(dataInterceptor).build();
 
     private AnalyticsHandler analyticsHandler;
 
@@ -244,6 +250,7 @@ public class FlareBot {
         }
     }
 
+    @Nonnull
     public static OkHttpClient getOkHttpClient() {
         return client;
     }
@@ -303,7 +310,7 @@ public class FlareBot {
         LOGGER.info("Starting run sequence");
         try {
             musicManager =
-                    PlayerManager.getPlayerManager(LibraryFactory.getLibrary(new JDAMultiShard(getShardsArray())));
+                    PlayerManager.getPlayerManager(LibraryFactory.getLibrary(new JDAMultiShard(shardManager)));
         } catch (UnknownBindingException e) {
             LOGGER.error("Failed to initialize musicManager", e);
         }
@@ -394,8 +401,11 @@ public class FlareBot {
         registerCommand(new AvatarCommand());
         registerCommand(new UpdateJDACommand());
         registerCommand(new ChangelogCommand());
+        registerCommand(new JumboCommand());
 
         registerCommand(new NINOCommand());
+
+        registerCommand(new DebugCommand());
 
         LOGGER.info("Loaded " + commands.size() + " commands!");
 
@@ -429,20 +439,32 @@ public class FlareBot {
                 "Started all tasks, run complete!", "Failed to start all tasks!",
                 this::runTasks);
 
+    } 
+    
+    /**
+     * This possibly-null will return the first connected JDA shard.
+     * This means that a lot of methods like sending embeds works even with shard 0 offline.
+     *
+     * @return The first possible JDA shard which is connected or null otherwise.
+     */
+    @Nullable
+    public JDA getClient() {
+        for (JDA jda : shardManager.getShardCache()) {
+            if (jda.getStatus() == JDA.Status.CONNECTED)
+                return jda;
+        }
+        return null;
     }
 
     /**
-     * This will always return the main shard or just the client itself.
-     * For reference the main shard will always be shard 0 - the shard responsible for DMs
+     * Get the SelfUser of the bot, this will be null if no shards are connected.
      *
-     * @return The main shard or actual client in the case of only 1 shard.
+     * @return The bot SelfUser or null if no CONNECTED shard is found.
      */
-    public JDA getClient() {
-        return shardManager.getShards().get(0);
-    }
-
+    @Nullable
     public SelfUser getSelfUser() {
-        return getClient().getSelfUser();
+        JDA shard = getClient();
+        return shard == null ? null : shard.getSelfUser();
     }
 
     private void loadFutureTasks() {
@@ -535,7 +557,7 @@ public class FlareBot {
                                 .getPlaylist().size()).sum())
                 .put("ram", (((runtime.totalMemory() - runtime.freeMemory()) / 1024) / 1024) + "MB")
                 .put("uptime", getUptime())
-                .put("http_requests", DataInterceptor.getRequests().intValue());
+                .put("http_requests", dataInterceptor.getRequests().intValue());
 
         ApiRequester.requestAsync(ApiRoute.UPDATE_DATA, data);
     }
@@ -662,6 +684,7 @@ public class FlareBot {
 
     // https://bots.are-pretty.sexy/214501.png
     // New way to process commands, this way has been proven to be quicker overall.
+    @Nullable
     public Command getCommand(String s, User user) {
         if (PerGuildPermissions.isCreator(user) || (isTestBot() && PerGuildPermissions.isContributor(user))) {
             for (Command cmd : getCommandsByType(CommandType.SECRET)) {
@@ -681,14 +704,17 @@ public class FlareBot {
         return null;
     }
 
+    @Nonnull
     public Set<Command> getCommands() {
         return this.commands;
     }
-
+    
+    @Nonnull
     public Set<Command> getCommandsByType(CommandType type) {
         return commands.stream().filter(command -> command.getType() == type).collect(Collectors.toSet());
     }
 
+    @Nonnull
     public static FlareBot getInstance() {
         return instance;
     }
@@ -1120,7 +1146,7 @@ public class FlareBot {
                             deadShards.toString());
                 }
             }
-        }.repeat(TimeUnit.MINUTES.toMillis(1), TimeUnit.MINUTES.toMillis(5));
+        }.repeat(TimeUnit.MINUTES.toMillis(10), TimeUnit.MINUTES.toMillis(5));
 
         new FlareBotTask("ActivityChecker") {
             @Override

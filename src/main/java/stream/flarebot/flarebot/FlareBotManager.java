@@ -58,6 +58,7 @@ public class FlareBotManager {
     public FlareBotManager() {
         instance = this;
         GUILD_DATA_TABLE = (FlareBot.getInstance().isTestBot() ? "flarebot.guild_data_test" : "flarebot.guild_data");
+        FlareBot.LOGGER.info("Using " + (FlareBot.getInstance().isTestBot() ? "test bot data" : "production bot data"));
     }
 
     public static FlareBotManager getInstance() {
@@ -210,9 +211,12 @@ public class FlareBotManager {
 
     public synchronized GuildWrapper getGuild(String id) {
         if (guilds == null) return null; //This is if it's ran before even being loaded
+        if (id == null) return null; // I think this should fix issues? I guess they request and kick us VERY quickly?
         guilds.computeIfAbsent(id, guildId -> {
             long start = System.currentTimeMillis();
             GuildWrapper wrapper = getGuildNoCache(id);
+            if (wrapper == null)
+                return null;
             long total = (System.currentTimeMillis() - start);
             loadTimes.add(total);
 

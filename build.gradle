@@ -25,21 +25,21 @@ repositories {
     maven { url "https://repo.eclipse.org/content/groups/releases/" }
 }
 dependencies {
-    compile group: 'net.dv8tion', name: 'JDA', version: '3.3.1_316'
+    //compile group: 'net.dv8tion', name: 'JDA', version: '3.5.1_342'
+    compile group: 'com.github.WalshyDev', name: 'JDA', version: '9029b24d37'
 
-    compile group: 'com.sedmelluq', name: 'lavaplayer', version: '1.2.39'
+    compile group: 'com.sedmelluq', name: 'lavaplayer', version: '1.2.56'
     compile(group: 'com.sedmelluq', name: 'jda-nas', version: '1.0.5') {
         exclude(module: 'JDA')
     }
     /*compile(group: 'com.arsenarsen.lavaplayer-bridge', name: 'jda-impl', version: '1.16-SNAPSHOT') {
         exclude(module: 'JDA')
     }*/
-    compile(group: 'com.github.FlareBot', name: 'lavaplayerbridge', version: '1afe8da') {
+    compile(group: 'com.github.FlareBot', name: 'lavaplayerbridge', version: '7cf3eba') {
         exclude(module: 'JDA')
     }
 
     compile group: 'com.github.binaryoverload', name: 'JSON-Config', version: '2.7.5'
-    compile group: 'com.github.ArsenArsen', name: 'githubwebhooks4j', version: '1.1.7'
 
     compile group: 'com.datastax.cassandra', name: 'cassandra-driver-core', version: '3.3.0'
     compile group: 'redis.clients', name: 'jedis', version: '2.9.0'
@@ -48,6 +48,7 @@ dependencies {
     compile group: 'com.squareup.okhttp3', name: 'okhttp', version: '3.8.1'
     compile group: 'com.mashape.unirest', name: 'unirest-java', version: '1.4.9'
 
+    compile group: 'org.apache.httpcomponents', name: 'httpclient', version: '4.5.5'
     compile group: 'org.apache.commons', name: 'commons-lang3', version: '3.5'
     compile group: 'commons-io', name: 'commons-io', version: '2.5'
     compile group: 'commons-cli', name: 'commons-cli', version: '1.3.1'
@@ -57,6 +58,7 @@ dependencies {
     compile group: 'joda-time', name: 'joda-time', version: '2.8'
     compile group: 'io.sentry', name: 'sentry-logback', version: '1.6.3'
     compile "org.eclipse.jgit:org.eclipse.jgit:4.9.2.201712150930-r"
+    compile group: 'org.codehaus.groovy', name: 'groovy-jsr223', version: '2.4.7'
 }
 
 compileJava.options.encoding = 'UTF-8'
