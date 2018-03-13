@@ -1,6 +1,7 @@
 package stream.flarebot.flarebot.util;
 
 import net.dv8tion.jda.core.EmbedBuilder;
+import net.dv8tion.jda.core.JDA;
 import net.dv8tion.jda.core.MessageBuilder;
 import net.dv8tion.jda.core.entities.Message;
 import net.dv8tion.jda.core.entities.MessageChannel;
@@ -27,6 +28,7 @@ import java.time.OffsetDateTime;
 import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
@@ -35,7 +37,7 @@ public class MessageUtils {
     private static FlareBot flareBot = FlareBot.getInstance();
 
     private static final Pattern INVITE_REGEX = Pattern
-            .compile("(?:https?://)?discord(?:app\\.com/invite|\\.gg)/(\\S+?)");
+            .compile("(?i)discord(\\.(com|gg|io|me|net|org|xyz)|app\\.com/invite)/[a-z0-9-_.]+");
     private static final Pattern LINK_REGEX = Pattern
             .compile("((http(s)?://)(www\\.)?)[a-zA-Z0-9-]+\\.[a-zA-Z0-9]+(\\.[a-zA-Z0-9]+)?/?(.+)?");
     private static final Pattern YOUTUBE_LINK_REGEX = Pattern
@@ -45,6 +47,8 @@ public class MessageUtils {
     private static final Pattern SPACE = Pattern.compile(" ");
 
     private static final String ZERO_WIDTH_SPACE = "\u200B";
+
+    private static JDA cachedJDA;
 
     public static void sendPM(User user, String message) {
         try {
@@ -105,6 +109,7 @@ public class MessageUtils {
             ResponseBody body = response.body();
             if (body != null) {
                 String key = new JSONObject(body.string()).getString("key");
+                body.close();
                 return "https://paste.flarebot.stream/" + key;
             } else {
                 FlareBot.LOGGER.error("Local instance of hastebin is down");
@@ -121,9 +126,21 @@ public class MessageUtils {
     }
 
     public static EmbedBuilder getEmbed() {
-        return new EmbedBuilder()
-                .setAuthor("FlareBot", "https://github.com/FlareBot/FlareBot", flareBot.getSelfUser()
-                        .getEffectiveAvatarUrl());
+        if (cachedJDA == null || cachedJDA.getStatus() != JDA.Status.CONNECTED)
+            cachedJDA = flareBot.getClient();
+
+        EmbedBuilder defaultEmbed = new EmbedBuilder().setColor(ColorUtils.FLAREBOT_BLUE);
+
+        // We really need to PR getAuthor and things into EmbedBuilder.
+        if (cachedJDA != null) {
+            defaultEmbed.setAuthor("FlareBot", "https://flarebot.stream", cachedJDA.getSelfUser().getEffectiveAvatarUrl());
+        }
+
+        return defaultEmbed.setColor(ColorUtils.FLAREBOT_BLUE);
+    }
+
+    public static EmbedBuilder getEmbed(User user) {
+        return getEmbed().setFooter("Requested by @" + getTag(user), user.getEffectiveAvatarUrl());
     }
 
     public static String getTag(User user) {
@@ -132,10 +149,6 @@ public class MessageUtils {
 
     public static String getUserAndId(User user) {
         return getTag(user) + " (" + user.getId() + ")";
-    }
-
-    public static EmbedBuilder getEmbed(User user) {
-        return getEmbed().setFooter("Requested by @" + getTag(user), user.getEffectiveAvatarUrl());
     }
 
     public static String getAvatar(User user) {
@@ -150,11 +163,6 @@ public class MessageUtils {
         channel.sendMessage(new MessageBuilder().append(
                 flareBot.getOfficialGuild().getRoleById(Constants.DEVELOPER_ID).getAsMention())
                 .setEmbed(getEmbed().setColor(Color.red).setDescription(s).build()).build()).queue();
-    }
-
-    private static void sendMessage(MessageEmbed embed, TextChannel channel) {
-        if (channel == null) return;
-        channel.sendMessage(embed).queue();
     }
 
     public static void sendMessage(MessageType type, String message, TextChannel channel) {
@@ -184,14 +192,21 @@ public class MessageUtils {
     public static void sendMessage(MessageType type, EmbedBuilder builder, TextChannel channel, long autoDeleteDelay) {
         if (builder.build().getColor() == null)
             builder.setColor(type.getColor());
-        if(type == MessageType.ERROR)
+        if (type == MessageType.ERROR)
             builder.setDescription(builder.build().getDescription() + "\n\nIf you need more support join our " +
                     "[Support Server](" + FlareBot.INVITE_URL + ")! Our staff can support on any issue you may have! "
                     + FlareBot.getInstance().getEmoteById(386550693294768129L).getAsMention());
+        if (FlareBot.getConfig().getString("globalMsg").isPresent())
+            builder.setDescription(builder.build().getDescription() + "\n\n" + FlareBot.getConfig().getString("globalMsg").get());
         if (autoDeleteDelay > 0)
             sendAutoDeletedMessage(builder.build(), autoDeleteDelay, channel);
         else
             sendMessage(builder.build(), channel);
+    }
+
+    private static void sendMessage(MessageEmbed embed, TextChannel channel) {
+        if (channel == null) return;
+        channel.sendMessage(embed).queue();
     }
 
     public static void sendMessage(String message, TextChannel channel) {
@@ -261,6 +276,14 @@ public class MessageUtils {
 
     public static boolean hasInvite(String message) {
         return INVITE_REGEX.matcher(message).find();
+    }
+
+    public static String getInvite(String message) {
+        Matcher matcher = INVITE_REGEX.matcher(message);
+        if (matcher.find())
+            return matcher.group();
+        else
+            return null;
     }
 
     public static boolean hasLink(Message message) {

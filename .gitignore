@@ -13,6 +13,10 @@ logs/
 *.log
 *.json
 out/
+/FlareBot/
+
+# We can't ignore this? I will find a wayyyyyy
+#/FlareBot/
 
 # Gradle can use hashes
 .gradle/
@@ -20,4 +24,3 @@ gradle/
 gradlew
 gradlew.bat
 settings.gradle
-build.gradle

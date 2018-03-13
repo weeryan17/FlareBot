@@ -30,10 +30,9 @@ import okhttp3.Request;
 import okhttp3.RequestBody;
 import org.json.JSONObject;
 import org.slf4j.Logger;
-import stream.flarebot.flarebot.api.ApiRequester;
-import stream.flarebot.flarebot.api.ApiRoute;
-import stream.flarebot.flarebot.commands.*;
-import stream.flarebot.flarebot.commands.secret.*;
+import stream.flarebot.flarebot.commands.Command;
+import stream.flarebot.flarebot.commands.CommandType;
+import stream.flarebot.flarebot.commands.secret.UpdateCommand;
 import stream.flarebot.flarebot.database.RedisController;
 import stream.flarebot.flarebot.mod.modlog.ModlogEvent;
 import stream.flarebot.flarebot.mod.modlog.ModlogHandler;
@@ -44,6 +43,7 @@ import stream.flarebot.flarebot.permissions.PerGuildPermissions;
 import stream.flarebot.flarebot.util.GeneralUtils;
 import stream.flarebot.flarebot.util.MessageUtils;
 import stream.flarebot.flarebot.util.WebUtils;
+import stream.flarebot.flarebot.util.errorhandling.Markers;
 
 import java.awt.Color;
 import java.time.LocalDateTime;
@@ -64,7 +64,7 @@ import java.util.stream.Collectors;
 
 public class Events extends ListenerAdapter {
 
-    private static final ThreadGroup COMMAND_THREADS = new ThreadGroup("Command Threads");
+    public static final ThreadGroup COMMAND_THREADS = new ThreadGroup("Command Threads");
     private static final ExecutorService CACHED_POOL = Executors.newCachedThreadPool(r ->
             new Thread(COMMAND_THREADS, r, "Command Pool-" + COMMAND_THREADS.activeCount()));
     private static final List<Long> removedByMe = new ArrayList<>();
@@ -118,7 +118,8 @@ public class Events extends ListenerAdapter {
             Welcome welcome = wrapper.getWelcome();
             if ((welcome.getChannelId() != null && flareBot.getChannelById(welcome.getChannelId()) != null)
                     || welcome.isDmEnabled()) {
-                if (welcome.getChannelId() != null && flareBot.getChannelById(welcome.getChannelId()) != null) {
+                if (welcome.getChannelId() != null && flareBot.getChannelById(welcome.getChannelId()) != null
+                        && welcome.isGuildEnabled()) {
                     TextChannel channel = flareBot.getChannelById(welcome.getChannelId());
                     if (!channel.canTalk()) {
                         welcome.setGuildEnabled(false);
@@ -247,7 +248,7 @@ public class Events extends ListenerAdapter {
 
     @Override
     public void onGuildVoiceMove(GuildVoiceMoveEvent event) {
-        handleVoiceConnectivity(event.getChannelLeft());
+        handleVoiceConnectivity(event.getChannelJoined());
     }
 
     @Override
@@ -260,19 +261,6 @@ public class Events extends ListenerAdapter {
         if (FlareBot.getPrefixes() == null || event.getAuthor().isBot()) return;
         String message = multiSpace.matcher(event.getMessage().getContentRaw()).replaceAll(" ");
         if (message.startsWith(String.valueOf(FlareBot.getPrefixes().get(getGuildId(event))))) {
-            List<Permission> perms = event.getChannel().getGuild().getSelfMember().getPermissions(event.getChannel());
-            if (!perms.contains(Permission.ADMINISTRATOR)) {
-                if (!perms.contains(Permission.MESSAGE_WRITE)) {
-                    return;
-                }
-                if (!perms.contains(Permission.MESSAGE_EMBED_LINKS)) {
-                    event.getChannel().sendMessage("Hey! I can't be used here." +
-                            "\nI do not have the `Embed Links` permission! Please go to your permissions and give me Embed Links." +
-                            "\nThanks :D").queue();
-                    return;
-                }
-            }
-
             String command = message.substring(1);
             String[] args = new String[0];
             if (message.contains(" ")) {
@@ -280,8 +268,22 @@ public class Events extends ListenerAdapter {
                 args = message.substring(message.indexOf(" ") + 1).split(" ");
             }
             Command cmd = flareBot.getCommand(command, event.getAuthor());
-            if (cmd != null)
+            if (cmd != null) {
+                List<Permission> perms =
+                        event.getChannel().getGuild().getSelfMember().getPermissions(event.getChannel());
+                if (!perms.contains(Permission.ADMINISTRATOR)) {
+                    if (!perms.contains(Permission.MESSAGE_WRITE)) {
+                        return;
+                    }
+                    if (!perms.contains(Permission.MESSAGE_EMBED_LINKS)) {
+                        event.getChannel().sendMessage("Hey! I can't be used here." +
+                                "\nI do not have the `Embed Links` permission! Please go to your permissions and give me Embed Links." +
+                                "\nThanks :D").queue();
+                        return;
+                    }
+                }
                 handleCommand(event, cmd, args);
+            }
         } else {
             if (FlareBot.getPrefixes().get(getGuildId(event)) != FlareBot.COMMAND_CHAR &&
                     (message.startsWith("_prefix")) || message.startsWith(event.getGuild().getSelfMember().getAsMention())) {
@@ -320,11 +322,11 @@ public class Events extends ListenerAdapter {
     @Override
     public void onDisconnect(DisconnectEvent event) {
         if (event.isClosedByServer())
-            LOGGER.error(String.format("---- DISCONNECT [SERVER] CODE: [%d] %s%n", event.getServiceCloseFrame()
+            LOGGER.error(Markers.NO_ANNOUNCE, String.format("---- DISCONNECT [SERVER] CODE: [%d] %s%n", event.getServiceCloseFrame()
                     .getCloseCode(), event
                     .getCloseCode()));
         else
-            LOGGER.error(String.format("---- DISCONNECT [CLIENT] CODE: [%d] %s%n", event.getClientCloseFrame()
+            LOGGER.error(Markers.NO_ANNOUNCE, String.format("---- DISCONNECT [CLIENT] CODE: [%d] %s%n", event.getClientCloseFrame()
                     .getCloseCode(), event
                     .getClientCloseFrame().getCloseReason()));
     }
@@ -374,8 +376,9 @@ public class Events extends ListenerAdapter {
                     "Dispatching command '" + cmd.getCommand() + "' " + Arrays
                             .toString(args) + " in " + event.getChannel() + "! Sender: " +
                             event.getAuthor().getName() + '#' + event.getAuthor().getDiscriminator());
-            ApiRequester.requestAsync(ApiRoute.DISPATCH_COMMAND, new JSONObject().put("command", cmd.getCommand())
-                    .put("guildId", guild.getGuildId()));
+            // We're sending a lot of commands... Let's change the way this works soon :D
+            /*ApiRequester.requestAsync(ApiRoute.DISPATCH_COMMAND, new JSONObject().put("command", cmd.getCommand())
+                    .put("guildId", guild.getGuildId()));*/
             commandCounter.incrementAndGet();
             try {
                 cmd.onCommand(event.getAuthor(), guild, event.getChannel(), event.getMessage(), args, event

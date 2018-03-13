@@ -14,6 +14,42 @@ import com.google.gson.JsonObject;
 import com.sedmelluq.discord.lavaplayer.jdaudp.NativeAudioSendFactory;
 import io.github.binaryoverload.JSONConfig;
 import io.sentry.Sentry;
+import io.sentry.SentryClient;
+import java.io.BufferedReader;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.io.OutputStream;
+import java.io.PrintStream;
+import java.lang.IllegalStateException;
+import java.net.URLDecoder;
+import java.nio.file.Files;
+import java.nio.file.Paths;
+import java.nio.file.StandardCopyOption;
+import java.text.SimpleDateFormat;
+import java.time.Clock;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Date;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Properties;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.stream.Collectors;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
+import javax.annotation.Nullable;
+import javax.annotation.Nonnull;
 import net.dv8tion.jda.bot.sharding.DefaultShardManagerBuilder;
 import net.dv8tion.jda.bot.sharding.ShardManager;
 import net.dv8tion.jda.core.EmbedBuilder;
@@ -42,20 +78,32 @@ import org.json.JSONObject;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import spark.Spark;
+import stream.flarebot.flarebot.analytics.ActivityAnalytics;
+import stream.flarebot.flarebot.analytics.AnalyticsHandler;
+import stream.flarebot.flarebot.analytics.GuildAnalytics;
+import stream.flarebot.flarebot.analytics.GuildCountAnalytics;
 import stream.flarebot.flarebot.api.ApiRequester;
 import stream.flarebot.flarebot.api.ApiRoute;
+import stream.flarebot.flarebot.api.GzipRequestInterceptor;
 import stream.flarebot.flarebot.audio.PlayerListener;
-import stream.flarebot.flarebot.commands.*;
-import stream.flarebot.flarebot.commands.currency.*;
+import stream.flarebot.flarebot.commands.Command;
+import stream.flarebot.flarebot.commands.CommandType;
+import stream.flarebot.flarebot.commands.Prefixes;
+import stream.flarebot.flarebot.commands.currency.ConvertCommand;
+import stream.flarebot.flarebot.commands.currency.CurrencyCommand;
 import stream.flarebot.flarebot.commands.general.*;
-import stream.flarebot.flarebot.commands.informational.*;
+import stream.flarebot.flarebot.commands.informational.BetaCommand;
+import stream.flarebot.flarebot.commands.informational.DonateCommand;
 import stream.flarebot.flarebot.commands.moderation.*;
 import stream.flarebot.flarebot.commands.moderation.mod.*;
 import stream.flarebot.flarebot.commands.music.*;
-import stream.flarebot.flarebot.commands.random.*;
+import stream.flarebot.flarebot.commands.random.AvatarCommand;
+import stream.flarebot.flarebot.commands.random.JumboCommand;
 import stream.flarebot.flarebot.commands.secret.*;
-import stream.flarebot.flarebot.commands.secret.internal.*;
-import stream.flarebot.flarebot.commands.useful.*;
+import stream.flarebot.flarebot.commands.secret.internal.ChangelogCommand;
+import stream.flarebot.flarebot.commands.secret.internal.PostUpdateCommand;
+import stream.flarebot.flarebot.commands.useful.RemindCommand;
+import stream.flarebot.flarebot.commands.useful.TagsCommand;
 import stream.flarebot.flarebot.database.CassandraController;
 import stream.flarebot.flarebot.database.RedisController;
 import stream.flarebot.flarebot.music.QueueListener;
@@ -72,39 +120,6 @@ import stream.flarebot.flarebot.util.ShardUtils;
 import stream.flarebot.flarebot.util.WebUtils;
 import stream.flarebot.flarebot.web.ApiFactory;
 import stream.flarebot.flarebot.web.DataInterceptor;
-
-import java.io.BufferedReader;
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileOutputStream;
-import java.io.IOException;
-import java.io.InputStreamReader;
-import java.io.OutputStream;
-import java.io.PrintStream;
-import java.net.URLDecoder;
-import java.nio.file.Files;
-import java.nio.file.Paths;
-import java.nio.file.StandardCopyOption;
-import java.text.SimpleDateFormat;
-import java.time.Clock;
-import java.time.LocalDate;
-import java.time.LocalDateTime;
-import java.time.temporal.ChronoUnit;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Date;
-import java.util.List;
-import java.util.Map;
-import java.util.Objects;
-import java.util.Properties;
-import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ScheduledFuture;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.stream.Collectors;
-import java.util.zip.ZipEntry;
-import java.util.zip.ZipOutputStream;
 
 public class FlareBot {
 
@@ -144,9 +159,12 @@ public class FlareBot {
     private long startTime;
     private static Prefixes prefixes;
 
-    private static OkHttpClient client =
+    private static final DataInterceptor dataInterceptor = new DataInterceptor(DataInterceptor.RequestSender.JDA);
+    private static final OkHttpClient client =
             new OkHttpClient.Builder().connectionPool(new ConnectionPool(4, 10, TimeUnit.SECONDS))
-                    .addInterceptor(new DataInterceptor()).build();
+                    .addInterceptor(dataInterceptor).build();
+
+    private AnalyticsHandler analyticsHandler;
 
     public static void main(String[] args) {
         Spark.port(8080);
@@ -193,7 +211,6 @@ public class FlareBot {
             System.exit(1);
         }
 
-        Sentry.init(config.getString("sentry.dsn").get());
         new CassandraController(config);
         new RedisController(config);
 
@@ -214,6 +231,12 @@ public class FlareBot {
             }
         }
 
+        SentryClient sentryClient =
+                Sentry.init(config.getString("sentry.dsn").get() + "?stacktrace.app.packages=stream.flarebot.flarebot");
+        sentryClient.setEnvironment(testBot ? "TestBot" : "Production");
+        sentryClient.setServerName(testBot ? "Test Server" : "Production Server");
+        sentryClient.setRelease(GitHandler.getLatestCommitId());
+
         if (!config.getString("misc.apiKey").isPresent() || config.getString("misc.apiKey").get().isEmpty())
             apiEnabled = false;
 
@@ -227,6 +250,7 @@ public class FlareBot {
         }
     }
 
+    @Nonnull
     public static OkHttpClient getOkHttpClient() {
         return client;
     }
@@ -286,12 +310,16 @@ public class FlareBot {
         LOGGER.info("Starting run sequence");
         try {
             musicManager =
-                    PlayerManager.getPlayerManager(LibraryFactory.getLibrary(new JDAMultiShard(getShardsArray())));
+                    PlayerManager.getPlayerManager(LibraryFactory.getLibrary(new JDAMultiShard(shardManager)));
         } catch (UnknownBindingException e) {
             LOGGER.error("Failed to initialize musicManager", e);
         }
         musicManager.getPlayerCreateHooks()
                 .register(player -> player.getQueueHookManager().register(new QueueListener()));
+
+        /* Any migration
+        MigrationHandler migrationHandler = new MigrationHandler();
+        migrationHandler.migrateSinglePermissionForAllGuilds("flarebot.playlist", "flarebot.queue");*/
 
         registerCommand(new HelpCommand());
         registerCommand(new SearchCommand());
@@ -306,7 +334,7 @@ public class FlareBot {
         registerCommand(new StopCommand());
         registerCommand(new SkipCommand());
         registerCommand(new ShuffleCommand());
-        registerCommand(new PlaylistCommand());
+        registerCommand(new QueueCommand());
         registerCommand(new SongCommand());
         registerCommand(new InviteCommand());
         registerCommand(new AutoAssignCommand());
@@ -373,6 +401,11 @@ public class FlareBot {
         registerCommand(new AvatarCommand());
         registerCommand(new UpdateJDACommand());
         registerCommand(new ChangelogCommand());
+        registerCommand(new JumboCommand());
+
+        registerCommand(new NINOCommand());
+
+        registerCommand(new DebugCommand());
 
         LOGGER.info("Loaded " + commands.size() + " commands!");
 
@@ -380,6 +413,12 @@ public class FlareBot {
         LOGGER.info("Bound API");
 
         musicManager.getPlayerCreateHooks().register(player -> player.addEventListener(new PlayerListener(player)));
+
+        analyticsHandler = new AnalyticsHandler();
+        analyticsHandler.registerAnalyticSender(new ActivityAnalytics());
+        analyticsHandler.registerAnalyticSender(new GuildAnalytics());
+        analyticsHandler.registerAnalyticSender(new GuildCountAnalytics());
+        analyticsHandler.run(isTestBot() ? 1000 : -1);
 
         GeneralUtils.methodErrorHandler(LOGGER, null,
                 "Executed creations!", "Failed to execute creations!",
@@ -400,20 +439,32 @@ public class FlareBot {
                 "Started all tasks, run complete!", "Failed to start all tasks!",
                 this::runTasks);
 
+    } 
+    
+    /**
+     * This possibly-null will return the first connected JDA shard.
+     * This means that a lot of methods like sending embeds works even with shard 0 offline.
+     *
+     * @return The first possible JDA shard which is connected or null otherwise.
+     */
+    @Nullable
+    public JDA getClient() {
+        for (JDA jda : shardManager.getShardCache()) {
+            if (jda.getStatus() == JDA.Status.CONNECTED)
+                return jda;
+        }
+        return null;
     }
 
     /**
-     * This will always return the main shard or just the client itself.
-     * For reference the main shard will always be shard 0 - the shard responsible for DMs
+     * Get the SelfUser of the bot, this will be null if no shards are connected.
      *
-     * @return The main shard or actual client in the case of only 1 shard.
+     * @return The bot SelfUser or null if no CONNECTED shard is found.
      */
-    public JDA getClient() {
-        return shardManager.getShards().get(0);
-    }
-
+    @Nullable
     public SelfUser getSelfUser() {
-        return getClient().getSelfUser();
+        JDA shard = getClient();
+        return shard == null ? null : shard.getSelfUser();
     }
 
     private void loadFutureTasks() {
@@ -427,11 +478,17 @@ public class FlareBot {
                                 row.getLong("target"), row.getString("content"), new DateTime(row.getTimestamp("expires_at")),
                                 new DateTime(row.getTimestamp("created_at")),
                                 FutureAction.Action.valueOf(row.getString("action").toUpperCase()));
+                try {
                 if (new DateTime().isAfter(fa.getExpires()))
                     fa.execute();
                 else {
                     fa.queue();
                     loaded[0]++;
+                }
+                } catch (NullPointerException e) {
+                    LOGGER.error("Failed to execute/queue future task"
+                             + "\nAction: " + fa.getAction() + "\nResponsible: " + fa.getResponsible() 
+                             + "\nTarget: " + fa.getTarget() + "\nContent: " + fa.getContent(), e);
                 }
             }
         });
@@ -473,7 +530,7 @@ public class FlareBot {
         LOGGER.debug("Sent " + shardManager.getShardsTotal() + " requests to " + url);
     }
 
-    private void setupUpdate() {
+    public void scheduleUpdate() {
         new FlareBotTask("Auto-Update") {
             @Override
             public void run() {
@@ -500,7 +557,7 @@ public class FlareBot {
                                 .getPlaylist().size()).sum())
                 .put("ram", (((runtime.totalMemory() - runtime.freeMemory()) / 1024) / 1024) + "MB")
                 .put("uptime", getUptime())
-                .put("http_requests", DataInterceptor.getRequests().intValue());
+                .put("http_requests", dataInterceptor.getRequests().intValue());
 
         ApiRequester.requestAsync(ApiRoute.UPDATE_DATA, data);
     }
@@ -592,7 +649,6 @@ public class FlareBot {
                 Files.copy(built.toPath(), current.toPath(), StandardCopyOption.REPLACE_EXISTING);
             } catch (InterruptedException | IOException e) {
                 LOGGER.error("Could not update!", e);
-                setupUpdate();
                 UpdateCommand.UPDATING.set(false);
             }
         } else
@@ -628,6 +684,7 @@ public class FlareBot {
 
     // https://bots.are-pretty.sexy/214501.png
     // New way to process commands, this way has been proven to be quicker overall.
+    @Nullable
     public Command getCommand(String s, User user) {
         if (PerGuildPermissions.isCreator(user) || (isTestBot() && PerGuildPermissions.isContributor(user))) {
             for (Command cmd : getCommandsByType(CommandType.SECRET)) {
@@ -647,14 +704,17 @@ public class FlareBot {
         return null;
     }
 
+    @Nonnull
     public Set<Command> getCommands() {
         return this.commands;
     }
-
+    
+    @Nonnull
     public Set<Command> getCommandsByType(CommandType type) {
         return commands.stream().filter(command -> command.getType() == type).collect(Collectors.toSet());
     }
 
+    @Nonnull
     public static FlareBot getInstance() {
         return instance;
     }
@@ -1068,16 +1128,50 @@ public class FlareBot {
                     cancel();
                     return;
                 }
-                Set<Integer> deadShards = getShards().stream().map(c -> c.getShardInfo().getShardId())
-                        .filter(ShardUtils::isDead).collect(Collectors.toSet());
-                if (deadShards.size() > 0) {
+                // 10 mins without an event... this son bitch is dead.
+                if (getShards().stream().anyMatch(shard -> ShardUtils.isDead(shard, TimeUnit.MINUTES.toMillis(10)))) {
+                    getShards().stream().filter(shard -> ShardUtils.isDead(shard, TimeUnit.MINUTES.toMillis(10)))
+                            .forEach(shard -> {
+                                getImportantWebhook().send("Restarting " + ShardUtils.getShardId(shard)
+                                        + " as it seems to be dead.");
+                                shardManager.restart(ShardUtils.getShardId(shard));
+                            });
+                }
 
+                Set<Integer> deadShards = getShards().stream().filter(ShardUtils::isDead).map(ShardUtils::getShardId)
+                        .collect(Collectors.toSet());
+
+                if (!deadShards.isEmpty()) {
                     getImportantWebhook().send("Found " + deadShards.size() + " possibly dead shards! Shards: " +
                             deadShards.toString());
                 }
             }
-        }.repeat(TimeUnit.MINUTES.toMillis(1), TimeUnit.MINUTES.toMillis(5));
+        }.repeat(TimeUnit.MINUTES.toMillis(10), TimeUnit.MINUTES.toMillis(5));
 
-        setupUpdate();
+        new FlareBotTask("ActivityChecker") {
+            @Override
+            public void run() {
+                for (VoiceChannel channel : getConnectedVoiceChannelList()) {
+                    if (channel.getMembers().stream().filter(member -> !member.getUser().isBot() && !member.getUser().isFake()).count() > 0 
+                            && !getMusicManager().getPlayer(channel.getGuild().getId()).getPlaylist().isEmpty() 
+                            && !getMusicManager().getPlayer(channel.getGuild().getId()).getPaused()) {
+                        manager.getLastActive().remove(channel.getGuild().getIdLong());
+                        return;
+                    }
+                    if (manager.getLastActive().containsKey(channel.getGuild().getIdLong())
+                           && System.currentTimeMillis() >= (manager.getLastActive().get(channel.getGuild().getIdLong()) 
+                               + TimeUnit.MINUTES.toMillis(10)))
+                        channel.getGuild().getAudioManager().closeAudioConnection();
+                }
+            }
+        }.repeat(10_000, 10_000);
+    }
+
+    public static JSONConfig getConfig() {
+        return config;
+    }
+
+    public AnalyticsHandler getAnalyticsHandler() {
+        return analyticsHandler;
     }
 }
